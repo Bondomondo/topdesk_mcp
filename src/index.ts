@@ -4,7 +4,8 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { URL } from "node:url";
 import { z } from "zod";
-import { loadConfig } from "./config.js";
+import { authenticateRequest, sendProtectedResourceMetadata } from "./auth.js";
+import { loadConfig, loadOAuthConfig } from "./config.js";
 import { TopdeskClient } from "./topdesk-client.js";
 
 const config = loadConfig();
@@ -147,11 +148,40 @@ async function startSseServer(): Promise<void> {
   const ssePath = process.env.MCP_SSE_PATH ?? "/sse";
   const messagePath = process.env.MCP_SSE_MESSAGE_PATH ?? "/messages";
   const transports = new Map<string, SSEServerTransport>();
+  const oauthConfig = loadOAuthConfig();
+
+  if (oauthConfig.enabled) {
+    console.error(
+      `topdesk-mcp OAuth 2.1 enabled — issuer: ${oauthConfig.issuer}, audience: ${oauthConfig.audience}`
+    );
+  }
 
   const httpServer = createServer(async (req: IncomingMessage, res: ServerResponse) => {
     const requestUrl = new URL(req.url ?? "/", `http://${req.headers.host ?? `${host}:${port}`}`);
 
+    // Unauthenticated: liveness probe for Azure App Service health checks
+    if (req.method === "GET" && requestUrl.pathname === "/health") {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ status: "ok" }));
+      return;
+    }
+
+    // Unauthenticated: RFC 9728 OAuth 2.0 Protected Resource Metadata
+    if (req.method === "GET" && requestUrl.pathname === "/.well-known/oauth-protected-resource") {
+      if (!oauthConfig.enabled) {
+        sendText(res, 404, "Not found.");
+        return;
+      }
+      sendProtectedResourceMetadata(res, oauthConfig);
+      return;
+    }
+
     if (req.method === "GET" && requestUrl.pathname === ssePath) {
+      if (oauthConfig.enabled) {
+        const ok = await authenticateRequest(req, res, oauthConfig);
+        if (!ok) return;
+      }
+
       const transport = new SSEServerTransport(messagePath, res);
       transports.set(transport.sessionId, transport);
       transport.onclose = () => {
@@ -163,6 +193,11 @@ async function startSseServer(): Promise<void> {
     }
 
     if (req.method === "POST" && requestUrl.pathname === messagePath) {
+      if (oauthConfig.enabled) {
+        const ok = await authenticateRequest(req, res, oauthConfig);
+        if (!ok) return;
+      }
+
       const sessionId = requestUrl.searchParams.get("sessionId");
       const transport = sessionId ? transports.get(sessionId) : undefined;
 
@@ -180,6 +215,11 @@ async function startSseServer(): Promise<void> {
 
   httpServer.listen(port, host, () => {
     console.error(`topdesk-mcp SSE transport listening at http://${host}:${port}${ssePath}`);
+    if (oauthConfig.enabled) {
+      console.error(
+        `OAuth protected resource metadata: http://${host}:${port}/.well-known/oauth-protected-resource`
+      );
+    }
   });
 }
 
