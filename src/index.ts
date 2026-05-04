@@ -143,8 +143,9 @@ async function startStdioServer(): Promise<void> {
 }
 
 async function startSseServer(): Promise<void> {
-  const host = process.env.MCP_SSE_HOST ?? "127.0.0.1";
-  const port = Number(process.env.MCP_SSE_PORT ?? 3000);
+  // Azure App Service injects PORT; fall back to MCP_SSE_PORT for local dev
+  const host = process.env.MCP_SSE_HOST ?? "0.0.0.0";
+  const port = Number(process.env.PORT ?? process.env.MCP_SSE_PORT ?? 3000);
   const ssePath = process.env.MCP_SSE_PATH ?? "/sse";
   const messagePath = process.env.MCP_SSE_MESSAGE_PATH ?? "/messages";
   const transports = new Map<string, SSEServerTransport>();
