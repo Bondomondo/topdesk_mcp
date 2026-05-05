@@ -109,11 +109,14 @@ export class TopdeskClient {
   }
 
   async getChangeById(id: string): Promise<TopdeskChange> {
-    const results = await this.listChanges({ query: `id==${id}`, pageSize: 1 });
-    if (!results.length) {
-      throw new Error(`TOPdesk change not found: ${id}`);
-    }
-    return results[0];
+    const encoded = encodeURIComponent(id);
+    const simple = await this.requestOrNull<TopdeskChange>(`/tas/api/operatorChanges/simple/${encoded}`);
+    if (simple) return simple;
+
+    const extensive = await this.requestOrNull<TopdeskChange>(`/tas/api/operatorChanges/extensive/${encoded}`);
+    if (extensive) return extensive;
+
+    throw new Error(`TOPdesk change not found: ${id}`);
   }
 
   async getChangeByNumber(number: string): Promise<TopdeskChange> {
@@ -126,6 +129,31 @@ export class TopdeskClient {
 
   async listChangeActivities(changeId: string): Promise<TopdeskChangeActivity[]> {
     return this.request<TopdeskChangeActivity[]>(`/tas/api/operatorChanges/${encodeURIComponent(changeId)}/activities`);
+  }
+
+  private async requestOrNull<T>(path: string): Promise<T | null> {
+    const url = `${this.config.baseUrl}${path}`;
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), this.config.timeoutMs);
+
+    try {
+      const response = await fetch(url, {
+        method: "GET",
+        headers: { Authorization: this.authHeader, Accept: "application/json" },
+        signal: controller.signal,
+      });
+
+      if (response.status === 404) return null;
+
+      if (!response.ok) {
+        const body = await response.text().catch(() => "");
+        throw new Error(`TOPdesk API error ${response.status} ${response.statusText}${body ? `: ${body}` : ""}`);
+      }
+
+      return (await response.json()) as T;
+    } finally {
+      clearTimeout(timeout);
+    }
   }
 
   private async request<T>(path: string): Promise<T> {
