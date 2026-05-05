@@ -129,6 +129,115 @@ function createMcpServer(): McpServer {
     }
   );
 
+  server.tool(
+    "topdesk_get_change",
+    "Get a TOPdesk change ticket by change number (e.g. C2500123) or internal ID.",
+    {
+      changeNumber: z.string().optional(),
+      changeId: z.string().optional()
+    },
+    async ({ changeNumber, changeId }) => {
+      if (!changeNumber && !changeId) {
+        throw new Error("Provide either changeNumber or changeId.");
+      }
+
+      const change = changeNumber
+        ? await topdesk.getChangeByNumber(changeNumber)
+        : await topdesk.getChangeById(changeId as string);
+
+      return {
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify(change, null, 2)
+          }
+        ]
+      };
+    }
+  );
+
+  server.tool(
+    "topdesk_get_change_status",
+    "Get a compact status summary for a TOPdesk change ticket.",
+    {
+      changeNumber: z.string().optional(),
+      changeId: z.string().optional()
+    },
+    async ({ changeNumber, changeId }) => {
+      if (!changeNumber && !changeId) {
+        throw new Error("Provide either changeNumber or changeId.");
+      }
+
+      const change = changeNumber
+        ? await topdesk.getChangeByNumber(changeNumber)
+        : await topdesk.getChangeById(changeId as string);
+
+      const summary = {
+        id: change.id,
+        number: change.number,
+        status: change.status?.name ?? null,
+        changeType: change.changeType?.name ?? null,
+        operator: change.operator?.dynamicName ?? null,
+        operatorGroup: change.operatorGroup?.name ?? null,
+        creationDate: change.creationDate ?? null,
+        implementationDate: change.implementationDate ?? null,
+        completionDate: change.completionDate ?? null
+      };
+
+      return {
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify(summary, null, 2)
+          }
+        ]
+      };
+    }
+  );
+
+  server.tool(
+    "topdesk_list_changes",
+    "List TOPdesk change tickets with optional paging, query filter, and fields projection.",
+    {
+      pageStart: z.number().int().nonnegative().optional(),
+      pageSize: z.number().int().positive().max(10000).optional(),
+      query: z.string().optional(),
+      fields: z.array(z.string()).optional()
+    },
+    async ({ pageStart, pageSize, query, fields }) => {
+      const changes = await topdesk.listChanges({ pageStart, pageSize, query, fields });
+
+      return {
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify(changes, null, 2)
+          }
+        ]
+      };
+    }
+  );
+
+  server.tool(
+    "topdesk_list_change_activities",
+    "List the activities (sub-tasks) within a TOPdesk change ticket.",
+    {
+      changeId: z.string()
+    },
+    async ({ changeId }) => {
+      const activities = await topdesk.listChangeActivities(changeId);
+
+      return {
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify(activities, null, 2)
+          }
+        ]
+      };
+    }
+  );
+
   return server;
 }
 

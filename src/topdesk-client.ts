@@ -27,6 +27,41 @@ export interface IncidentListParams {
   fields?: string[];
 }
 
+export interface TopdeskChange {
+  id: string;
+  number: string;
+  briefDescription?: string;
+  status?: { id?: string; name?: string };
+  changeType?: { id?: string; name?: string };
+  category?: { name?: string; id?: string };
+  subcategory?: { name?: string; id?: string };
+  requester?: { id?: string; dynamicName?: string };
+  operator?: { id?: string; dynamicName?: string };
+  operatorGroup?: { id?: string; name?: string };
+  creationDate?: string;
+  implementationDate?: string;
+  completionDate?: string;
+  [key: string]: unknown;
+}
+
+export interface TopdeskChangeActivity {
+  id: string;
+  number?: string;
+  briefDescription?: string;
+  status?: { id?: string; name?: string };
+  operator?: { id?: string; dynamicName?: string };
+  plannedStartDate?: string;
+  plannedFinalDate?: string;
+  [key: string]: unknown;
+}
+
+export interface ChangeListParams {
+  pageStart?: number;
+  pageSize?: number;
+  query?: string;
+  fields?: string[];
+}
+
 export class TopdeskClient {
   private readonly authHeader: string;
 
@@ -55,6 +90,29 @@ export class TopdeskClient {
 
   async listIncidentStatuses(): Promise<Array<{ id: string; name: string }>> {
     return this.request<Array<{ id: string; name: string }>>(`/tas/api/incidents/statuses`);
+  }
+
+  async listChanges(params: ChangeListParams = {}): Promise<TopdeskChange[]> {
+    const search = new URLSearchParams();
+    if (params.pageStart !== undefined) search.set("page_start", String(params.pageStart));
+    if (params.pageSize !== undefined) search.set("page_size", String(params.pageSize));
+    if (params.query) search.set("query", params.query);
+    if (params.fields?.length) search.set("fields", params.fields.join(","));
+
+    const path = `/tas/api/operatorChanges${search.toString() ? `?${search}` : ""}`;
+    return this.request<TopdeskChange[]>(path);
+  }
+
+  async getChangeById(id: string): Promise<TopdeskChange> {
+    return this.request<TopdeskChange>(`/tas/api/operatorChanges/${encodeURIComponent(id)}`);
+  }
+
+  async getChangeByNumber(number: string): Promise<TopdeskChange> {
+    return this.request<TopdeskChange>(`/tas/api/operatorChanges/number/${encodeURIComponent(number)}`);
+  }
+
+  async listChangeActivities(changeId: string): Promise<TopdeskChangeActivity[]> {
+    return this.request<TopdeskChangeActivity[]>(`/tas/api/operatorChanges/${encodeURIComponent(changeId)}/activities`);
   }
 
   private async request<T>(path: string): Promise<T> {
