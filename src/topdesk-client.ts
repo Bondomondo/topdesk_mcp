@@ -109,7 +109,11 @@ export class TopdeskClient {
   }
 
   async getChangeById(id: string): Promise<TopdeskChange> {
-    return this.request<TopdeskChange>(`/tas/api/operatorChanges/${encodeURIComponent(id)}`);
+    const results = await this.listChanges({ query: `id==${id}`, pageSize: 1 });
+    if (!results.length) {
+      throw new Error(`TOPdesk change not found: ${id}`);
+    }
+    return results[0];
   }
 
   async getChangeByNumber(number: string): Promise<TopdeskChange> {
