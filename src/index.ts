@@ -197,15 +197,16 @@ function createMcpServer(): McpServer {
 
   server.tool(
     "topdesk_list_changes",
-    "List TOPdesk change tickets with optional paging, query filter, and fields projection.",
+    "List TOPdesk change tickets with optional paging, operator group filter, query filter, and fields projection.",
     {
       pageStart: z.number().int().nonnegative().optional(),
       pageSize: z.number().int().positive().max(10000).optional(),
-      query: z.string().optional(),
+      operatorGroup: z.string().optional().describe("Filter by operator group name (exact match)"),
+      query: z.string().optional().describe("Additional FIQL query string, combined with other filters"),
       fields: z.array(z.string()).optional()
     },
-    async ({ pageStart, pageSize, query, fields }) => {
-      const changes = await topdesk.listChanges({ pageStart, pageSize, query, fields });
+    async ({ pageStart, pageSize, operatorGroup, query, fields }) => {
+      const changes = await topdesk.listChanges({ pageStart, pageSize, operatorGroup, query, fields });
 
       return {
         content: [

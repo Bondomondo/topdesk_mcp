@@ -59,6 +59,7 @@ export interface ChangeListParams {
   pageStart?: number;
   pageSize?: number;
   query?: string;
+  operatorGroup?: string;
   fields?: string[];
 }
 
@@ -96,8 +97,12 @@ export class TopdeskClient {
     const search = new URLSearchParams();
     if (params.pageStart !== undefined) search.set("page_start", String(params.pageStart));
     if (params.pageSize !== undefined) search.set("page_size", String(params.pageSize));
-    if (params.query) search.set("query", params.query);
     if (params.fields?.length) search.set("fields", params.fields.join(","));
+
+    const clauses: string[] = [];
+    if (params.operatorGroup) clauses.push(`operatorGroup.name=="${params.operatorGroup}"`);
+    if (params.query) clauses.push(params.query);
+    if (clauses.length) search.set("query", clauses.join(";"));
 
     const path = `/tas/api/operatorChanges${search.toString() ? `?${search}` : ""}`;
     return this.request<TopdeskChange[]>(path);
