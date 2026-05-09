@@ -4,7 +4,8 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { URL } from "node:url";
 import { z } from "zod";
-import { loadConfig } from "./config.js";
+import { authenticateRequest, sendProtectedResourceMetadata } from "./auth.js";
+import { loadConfig, loadOAuthConfig } from "./config.js";
 import { TopdeskClient } from "./topdesk-client.js";
 
 const config = loadConfig();
@@ -128,6 +129,116 @@ function createMcpServer(): McpServer {
     }
   );
 
+  server.tool(
+    "topdesk_get_change",
+    "Get a TOPdesk change ticket by change number (e.g. C2500123) or internal ID.",
+    {
+      changeNumber: z.string().optional(),
+      changeId: z.string().optional()
+    },
+    async ({ changeNumber, changeId }) => {
+      if (!changeNumber && !changeId) {
+        throw new Error("Provide either changeNumber or changeId.");
+      }
+
+      const change = changeNumber
+        ? await topdesk.getChangeByNumber(changeNumber)
+        : await topdesk.getChangeById(changeId as string);
+
+      return {
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify(change, null, 2)
+          }
+        ]
+      };
+    }
+  );
+
+  server.tool(
+    "topdesk_get_change_status",
+    "Get a compact status summary for a TOPdesk change ticket.",
+    {
+      changeNumber: z.string().optional(),
+      changeId: z.string().optional()
+    },
+    async ({ changeNumber, changeId }) => {
+      if (!changeNumber && !changeId) {
+        throw new Error("Provide either changeNumber or changeId.");
+      }
+
+      const change = changeNumber
+        ? await topdesk.getChangeByNumber(changeNumber)
+        : await topdesk.getChangeById(changeId as string);
+
+      const summary = {
+        id: change.id,
+        number: change.number,
+        status: change.status?.name ?? null,
+        changeType: change.changeType?.name ?? null,
+        operator: change.operator?.dynamicName ?? null,
+        operatorGroup: change.operatorGroup?.name ?? null,
+        creationDate: change.creationDate ?? null,
+        implementationDate: change.implementationDate ?? null,
+        completionDate: change.completionDate ?? null
+      };
+
+      return {
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify(summary, null, 2)
+          }
+        ]
+      };
+    }
+  );
+
+  server.tool(
+    "topdesk_list_changes",
+    "List TOPdesk change tickets with optional paging, operator group filter, query filter, and fields projection.",
+    {
+      pageStart: z.number().int().nonnegative().optional(),
+      pageSize: z.number().int().positive().max(10000).optional(),
+      operatorGroup: z.string().optional().describe("Filter by operator group name (exact match)"),
+      query: z.string().optional().describe("Additional FIQL query string, combined with other filters"),
+      fields: z.array(z.string()).optional()
+    },
+    async ({ pageStart, pageSize, operatorGroup, query, fields }) => {
+      const changes = await topdesk.listChanges({ pageStart, pageSize, operatorGroup, query, fields });
+
+      return {
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify(changes, null, 2)
+          }
+        ]
+      };
+    }
+  );
+
+  server.tool(
+    "topdesk_list_change_activities",
+    "List the activities (sub-tasks) within a TOPdesk change ticket.",
+    {
+      changeId: z.string()
+    },
+    async ({ changeId }) => {
+      const activities = await topdesk.listChangeActivities(changeId);
+
+      return {
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify(activities, null, 2)
+          }
+        ]
+      };
+    }
+  );
+
   return server;
 }
 
@@ -142,16 +253,46 @@ async function startStdioServer(): Promise<void> {
 }
 
 async function startSseServer(): Promise<void> {
-  const host = process.env.MCP_SSE_HOST ?? "127.0.0.1";
-  const port = Number(process.env.MCP_SSE_PORT ?? 3000);
+  // Azure App Service injects PORT; fall back to MCP_SSE_PORT for local dev
+  const host = process.env.MCP_SSE_HOST ?? "0.0.0.0";
+  const port = Number(process.env.PORT ?? process.env.MCP_SSE_PORT ?? 3000);
   const ssePath = process.env.MCP_SSE_PATH ?? "/sse";
   const messagePath = process.env.MCP_SSE_MESSAGE_PATH ?? "/messages";
   const transports = new Map<string, SSEServerTransport>();
+  const oauthConfig = loadOAuthConfig();
+
+  if (oauthConfig.enabled) {
+    console.error(
+      `topdesk-mcp OAuth 2.1 enabled — issuer: ${oauthConfig.issuer}, audience: ${oauthConfig.audience}`
+    );
+  }
 
   const httpServer = createServer(async (req: IncomingMessage, res: ServerResponse) => {
     const requestUrl = new URL(req.url ?? "/", `http://${req.headers.host ?? `${host}:${port}`}`);
 
+    // Unauthenticated: liveness probe for Azure App Service health checks
+    if (req.method === "GET" && requestUrl.pathname === "/health") {
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ status: "ok" }));
+      return;
+    }
+
+    // Unauthenticated: RFC 9728 OAuth 2.0 Protected Resource Metadata
+    if (req.method === "GET" && requestUrl.pathname === "/.well-known/oauth-protected-resource") {
+      if (!oauthConfig.enabled) {
+        sendText(res, 404, "Not found.");
+        return;
+      }
+      sendProtectedResourceMetadata(res, oauthConfig);
+      return;
+    }
+
     if (req.method === "GET" && requestUrl.pathname === ssePath) {
+      if (oauthConfig.enabled) {
+        const ok = await authenticateRequest(req, res, oauthConfig);
+        if (!ok) return;
+      }
+
       const transport = new SSEServerTransport(messagePath, res);
       transports.set(transport.sessionId, transport);
       transport.onclose = () => {
@@ -163,6 +304,11 @@ async function startSseServer(): Promise<void> {
     }
 
     if (req.method === "POST" && requestUrl.pathname === messagePath) {
+      if (oauthConfig.enabled) {
+        const ok = await authenticateRequest(req, res, oauthConfig);
+        if (!ok) return;
+      }
+
       const sessionId = requestUrl.searchParams.get("sessionId");
       const transport = sessionId ? transports.get(sessionId) : undefined;
 
@@ -180,6 +326,11 @@ async function startSseServer(): Promise<void> {
 
   httpServer.listen(port, host, () => {
     console.error(`topdesk-mcp SSE transport listening at http://${host}:${port}${ssePath}`);
+    if (oauthConfig.enabled) {
+      console.error(
+        `OAuth protected resource metadata: http://${host}:${port}/.well-known/oauth-protected-resource`
+      );
+    }
   });
 }
 
